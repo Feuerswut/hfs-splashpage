@@ -66,7 +66,7 @@ exports.init = api => {
     const fs = require('fs')
     const path = require('path')
     
-    const defaultHTMLPath = path.join(__dirname, 'index.html')
+    const defaultHTMLPath = path.join(__dirname, 'public/index.html')
     let defaultHTML = '<html><body><h1>Error loading splash page</h1></body></html>'
     
     try {
