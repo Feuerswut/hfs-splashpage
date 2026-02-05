@@ -1,5 +1,5 @@
 // Plugin metadata HFS v3
-exports.version = 0.1;
+exports.version = 0.2;
 exports.description = "Display a splash page before users can access the site";
 exports.apiRequired = 12.97;
 
@@ -59,6 +59,27 @@ exports.config = {
                 $width: 2
             }
         }
+    },
+    urlExceptions: {
+        type: 'array',
+        label: 'Full URL Exceptions (Regex)',
+        defaultValue: [
+            { pattern: '\\?.*sharelink=', enabled: true }
+        ],
+        showIf: values => values.enabled,
+        fields: {
+            pattern: {
+                type: 'string',
+                label: 'Pattern',
+                $width: 4
+            },
+            enabled: {
+                type: 'boolean',
+                label: 'Enabled',
+                defaultValue: true,
+                $width: 2
+            }
+        }
     }
 }
 
@@ -103,11 +124,15 @@ exports.init = api => {
             cookieDays: api.getConfig('cookieDays'),
             useCustomHTML: api.getConfig('useCustomHTML'),
             customHTMLPath: api.getConfig('customHTMLPath'),
-            exceptions: api.getConfig('exceptions')
+            exceptions: api.getConfig('exceptions'),
+            urlExceptions: api.getConfig('urlExceptions')
         }
 
         if (!config.enabled) return
         if (isException(ctx.path, config.exceptions)) return
+
+        const fullURL = ctx.protocol + '://' + ctx.get('host') + ctx.url
+        if (isException(fullURL, config.urlExceptions)) return
 
         const cookie = getCookie(ctx.get('cookie'), config.cookieName)
         if (cookie === 'true') return
