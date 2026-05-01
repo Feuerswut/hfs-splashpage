@@ -1,5 +1,5 @@
 // Plugin metadata HFS v3
-exports.version = 0.3;
+exports.version = 0.4;
 exports.description = "Display a splash page before users can access the site";
 exports.apiRequired = 13;
 
@@ -91,6 +91,11 @@ exports.config = {
 exports.init = api => {
     const fs = require('fs')
     const path = require('path')
+
+    // --- Advanced options (not exposed in UI) ---
+    const ADVANCED_WEBDAV_DETECTION = true  // also detect via UA patterns and PROPFIND method
+    const DEBUG_WEBDAV = false              // log WebDAV detection details per request
+    // --------------------------------------------
     
     const defaultHTMLPath = path.join(__dirname, 'public/index.html')
     let defaultHTML = '<html><body><h1>Error loading splash page</h1></body></html>'
@@ -143,7 +148,12 @@ exports.init = api => {
         if (apiBase && ctx.path.startsWith(apiBase)) return
 
         // Skip WebDAV clients when the option is on
-        if (config.ignoreWebdav && ctx.webdavDetected) return
+        // Fall back to UA matching if HFS hasn't set webdavDetected (e.g. Microsoft-WebDAV-MiniRedir)
+        const WEBDAV_UA = /microsoft-webdav|davfs|cyberduck|bitkinex|webdrive|netdrive|webdav|cadaver|konqueror\/|gvfs\/|sabredav/i
+        const uaMatch = ADVANCED_WEBDAV_DETECTION && WEBDAV_UA.test(ctx.get('user-agent') || '')
+        const propfindMatch = ADVANCED_WEBDAV_DETECTION && ctx.method === 'PROPFIND'
+        const isWebdav = ctx.state.webdavDetected || uaMatch || propfindMatch
+        if (config.ignoreWebdav && isWebdav) return
 
         if (isException(ctx.path, config.exceptions)) return
 
