@@ -1,7 +1,7 @@
 // Plugin metadata HFS v3
-exports.version = 0.2;
+exports.version = 0.3;
 exports.description = "Display a splash page before users can access the site";
-exports.apiRequired = 12.97;
+exports.apiRequired = 13;
 
 exports.author = "Feuerswut";
 exports.repo = "Feuerswut/hfs-splashpage"
@@ -25,6 +25,12 @@ exports.config = {
         min: 1,
         showIf: values => values.enabled
     },
+    ignoreWebdav: {
+        type: 'boolean',
+        label: 'Skip Splash for WebDAV Clients',
+        defaultValue: true,
+        showIf: values => values.enabled
+    },
     useCustomHTML: {
         type: 'boolean',
         label: 'Use Custom HTML File',
@@ -41,7 +47,6 @@ exports.config = {
         type: 'array',
         label: 'Path Exceptions (Regex)',
         defaultValue: [
-            { pattern: '~/a*', enabled: true },
             { pattern: 'robots.txt$', enabled: true },
             { pattern: '^/legal*', enabled: false }
         ],
@@ -122,6 +127,7 @@ exports.init = api => {
             enabled: api.getConfig('enabled'),
             cookieName: api.getConfig('cookieName'),
             cookieDays: api.getConfig('cookieDays'),
+            ignoreWebdav: api.getConfig('ignoreWebdav'),
             useCustomHTML: api.getConfig('useCustomHTML'),
             customHTMLPath: api.getConfig('customHTMLPath'),
             exceptions: api.getConfig('exceptions'),
@@ -129,6 +135,16 @@ exports.init = api => {
         }
 
         if (!config.enabled) return
+
+        // Always skip requests from the admin panel and API
+        const adminBase = api.misc?.adminUrl
+        if (adminBase && ctx.path.startsWith(adminBase)) return
+        const apiBase = api.misc?.apiUrl
+        if (apiBase && ctx.path.startsWith(apiBase)) return
+
+        // Skip WebDAV clients when the option is on
+        if (config.ignoreWebdav && ctx.webdavDetected) return
+
         if (isException(ctx.path, config.exceptions)) return
 
         const fullURL = ctx.protocol + '://' + ctx.get('host') + ctx.url
