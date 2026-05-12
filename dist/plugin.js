@@ -1,5 +1,5 @@
 // Plugin metadata HFS v3
-exports.version = 0.4;
+exports.version = 0.5;
 exports.description = "Display a splash page before users can access the site";
 exports.apiRequired = 13;
 
@@ -142,10 +142,8 @@ exports.init = api => {
         if (!config.enabled) return
 
         // Always skip requests from the admin panel and API
-        const adminBase = api.misc?.adminUrl
+        const adminBase = "/~"
         if (adminBase && ctx.path.startsWith(adminBase)) return
-        const apiBase = api.misc?.apiUrl
-        if (apiBase && ctx.path.startsWith(apiBase)) return
 
         // Skip WebDAV clients when the option is on
         // Fall back to UA matching if HFS hasn't set webdavDetected (e.g. Microsoft-WebDAV-MiniRedir)
