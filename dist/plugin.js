@@ -3,8 +3,8 @@ exports.version = 0.6;
 exports.description = "Display a splash page before users can access the site";
 exports.apiRequired = 13;
 
-exports.author = "Feuerswut";
-exports.repo = "Feuerswut/hfs-splashpage"
+exports.author = "feuerswut";
+exports.repo = "feuerswut/hfs-splashpage"
 
 exports.config = {
     enabled: {
