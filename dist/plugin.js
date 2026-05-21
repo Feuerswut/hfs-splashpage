@@ -1,5 +1,5 @@
 // Plugin metadata HFS v3
-exports.version = 0.5;
+exports.version = 0.6;
 exports.description = "Display a splash page before users can access the site";
 exports.apiRequired = 13;
 
@@ -11,6 +11,25 @@ exports.config = {
         type: 'boolean',
         label: 'Enable Splash Page',
         defaultValue: true
+    },
+    selectedHosts: {
+        type: 'array',
+        label: 'Selected Hosts (empty = all domains)',
+        defaultValue: [],
+        showIf: values => values.enabled,
+        fields: {
+            pattern: {
+                type: 'string',
+                label: 'Host Pattern (regex)',
+                $width: 4
+            },
+            enabled: {
+                type: 'boolean',
+                label: 'Enabled',
+                defaultValue: true,
+                $width: 2
+            }
+        }
     },
     cookieName: {
         type: 'string',
@@ -117,6 +136,24 @@ exports.init = api => {
         return false
     }
 
+    function isHostSelected(hostHeader, selectedHosts) {
+        // If no hosts are selected, apply to all
+        if (!selectedHosts || selectedHosts.length === 0) return true
+        
+        if (!hostHeader) return false
+        
+        // Strip port if present
+        const host = hostHeader.split(':')[0]
+        
+        for (const entry of selectedHosts) {
+            if (!entry.enabled || !entry.pattern) continue
+            try {
+                if (new RegExp(entry.pattern, 'i').test(host)) return true
+            } catch (e) {}
+        }
+        return false
+    }
+
     function getCookie(cookieHeader, name) {
         if (!cookieHeader) return null
         const cookies = cookieHeader.split(';')
@@ -130,6 +167,7 @@ exports.init = api => {
     exports.middleware = ctx => {
         const config = {
             enabled: api.getConfig('enabled'),
+            selectedHosts: api.getConfig('selectedHosts'),
             cookieName: api.getConfig('cookieName'),
             cookieDays: api.getConfig('cookieDays'),
             ignoreWebdav: api.getConfig('ignoreWebdav'),
@@ -144,6 +182,9 @@ exports.init = api => {
         // Always skip requests from the admin panel and API
         const adminBase = "/~"
         if (adminBase && ctx.path.startsWith(adminBase)) return
+
+        // Check if this host is selected
+        if (!isHostSelected(ctx.get('host'), config.selectedHosts)) return
 
         // Skip WebDAV clients when the option is on
         // Fall back to UA matching if HFS hasn't set webdavDetected (e.g. Microsoft-WebDAV-MiniRedir)
