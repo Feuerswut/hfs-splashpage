@@ -7,11 +7,13 @@ exports.author = "feuerswut";
 exports.repo = "feuerswut/hfs-splashpage"
 
 // The config form and the plugin log sit side by side in a wrapping flex row,
-// the log claiming a minimum of 40em. "width" sizes the dialog body, "maxWidth"
-// is picked up by the admin panel and applied to the form alone -- so the form
-// gets room for the rule grid's columns while the log is pushed past the wrap
-// point and lands below the options instead of hogging the right column.
-exports.configDialog = { sx: { width: '85vw', maxWidth: '1250px' } }
+// the log claiming a minimum of 40em and growing to fill whatever is left.
+// "maxWidth" is read by the admin panel and applied to the form alone, so it
+// cannot cap the log -- only the dialog body can, which is what "width" is for.
+// Capping both at the same 1250px keeps the form too wide for the log to fit
+// beside it, so the log always wraps to the end instead of taking the right
+// column, and the two panels line up at the same width.
+exports.configDialog = { sx: { width: 'min(85vw, 1250px)', maxWidth: '1250px' } }
 
 // Bumped when the shape of the stored config changes; see migrate() in init.
 const CONFIG_VERSION = 2
@@ -65,7 +67,7 @@ exports.config = {
             { priority: 10, name: 'robots.txt', pattern: '.*/robots\\.txt', match: 'path', rule: 'allow' },
         ],
         showIf: values => values.mode !== 'none',
-        helperText: "Evaluated low priority first; the first match decides. **The pattern must match the whole path**, so `/s/files` does not cover `/s/files/a.txt` -- write `/s/files(/.*)?` for that. Paths that match nothing get the splash page, so a broad allow rule with a high priority turns the list into a whitelist.",
+        helperText: "Evaluated low priority first; the first match decides. The list is re-sorted into that order when you save, and two rows sharing a number are separated by bumping the lower one, so what you see is what runs. **The pattern must match the whole path**, so `/s/files` does not cover `/s/files/a.txt` -- write `/s/files(/.*)?` for that. Paths that match nothing get the splash page, so a broad allow rule with a high priority turns the list into a whitelist.",
         fields: {
             priority: {
                 type: 'number',
@@ -253,6 +255,36 @@ exports.init = api => {
         return out
     }
 
+    function priorityOf(r) {
+        const n = Number(r && r.priority)
+        return Number.isFinite(n) ? n : 100
+    }
+
+    // The grid shows rules in stored order but they run by ascending priority,
+    // so editing a number leaves the two disagreeing until this puts the stored
+    // list back in evaluation order. Ties are then broken by nudging the later
+    // row up by one, which makes the integers themselves say what will happen
+    // instead of hiding the tie-break in the sort. Returns a tidied copy, or
+    // null when the list already reads the way it runs -- so the config is only
+    // rewritten when it would actually change.
+    function tidyRules(list) {
+        if (!Array.isArray(list) || !list.length) return null
+        const decorated = list.map((r, i) => ({ r, i }))
+        // Decorated by index because a plain sort is only guaranteed stable
+        // within one engine, and the tie-break has to be reproducible.
+        decorated.sort((a, b) => (priorityOf(a.r) - priorityOf(b.r)) || (a.i - b.i))
+        let changed = decorated.some((x, i) => x.i !== i)
+        const out = []
+        let last = -Infinity
+        for (const x of decorated) {
+            const want = priorityOf(x.r) <= last ? last + 1 : priorityOf(x.r)
+            if (want !== x.r.priority) changed = true
+            out.push(Object.assign({}, x.r, { priority: want }))
+            last = want
+        }
+        return changed ? out : null
+    }
+
     function buildHosts(list) {
         const out = []
         for (const h of (list || [])) {
@@ -373,7 +405,17 @@ exports.init = api => {
     migrate()
 
     // Compile once per config change rather than once per request.
-    const unsubRules = api.subscribeConfig('rules', v => { compiledRules = buildRules(v) })
+    const unsubRules = api.subscribeConfig('rules', v => {
+        const tidy = tidyRules(v)
+        compiledRules = buildRules(tidy || v)
+        // Written back after compiling, so the running rules are correct even if
+        // the host defers the resulting config event. Re-entry is harmless: the
+        // tidied list is already in order, so the second pass returns null.
+        if (tidy) {
+            api.log('rule list re-ordered to match evaluation order')
+            api.setConfig('rules', tidy)
+        }
+    })
     const unsubHosts = api.subscribeConfig('hosts', v => { compiledHosts = buildHosts(v) })
 
     exports.unload = () => {
