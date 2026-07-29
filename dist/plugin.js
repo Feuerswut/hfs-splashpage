@@ -6,14 +6,26 @@ exports.apiRequired = 13;
 exports.author = "feuerswut";
 exports.repo = "feuerswut/hfs-splashpage"
 
-// The config form and the plugin log sit side by side in a wrapping flex row,
-// the log claiming a minimum of 40em and growing to fill whatever is left.
+// The config form and the plugin log sit side by side in a wrapping flex row.
 // "maxWidth" is read by the admin panel and applied to the form alone, so it
 // cannot cap the log -- only the dialog body can, which is what "width" is for.
 // Capping both at the same 1250px keeps the form too wide for the log to fit
 // beside it, so the log always wraps to the end instead of taking the right
 // column, and the two panels line up at the same width.
-exports.configDialog = { sx: { width: 'min(85vw, 1250px)', maxWidth: '1250px' } }
+//
+// The nested rule clears the two min-widths the admin panel puts on that row:
+// "min-content" on the form and "min(40em, 90vw)" on the log. Both are floors
+// that survive a window being made narrow again -- the rule grid settles at
+// whatever width it was widest at, and min-content then refuses to give it
+// back, so the dialog overflows instead of shrinking. With the floors gone the
+// row follows the viewport in both directions and the grid scrolls internally.
+// "> * > *" is the form box and the log paper: they are the only two children
+// of the flex row, which is itself the only child of the dialog body.
+exports.configDialog = { sx: {
+    width: 'min(85vw, 1250px)',
+    maxWidth: '1250px',
+    '& > * > *': { minWidth: '0 !important' },
+} }
 
 // Bumped when the shape of the stored config changes; see migrate() in init.
 const CONFIG_VERSION = 2
@@ -40,7 +52,13 @@ exports.config = {
             name: {
                 type: 'string',
                 label: 'Name',
-                $width: 3
+                $width: 3,
+                // Flex columns need a floor of their own now that the dialog is
+                // free to shrink, and the grid's 50px default is far below what
+                // a name or a regex needs to stay readable. At 240 the whole
+                // row bottoms out around 800px, after which the grid scrolls
+                // sideways rather than squeezing the text into uselessness.
+                $column: { minWidth: 240 }
             },
             pattern: {
                 type: 'string',
@@ -50,7 +68,8 @@ exports.config = {
                     if (!v) return "pattern is required"
                     try { new RegExp(v); return false }
                     catch (e) { return "invalid regex: " + e.message }
-                }
+                },
+                $column: { minWidth: 240 }
             },
             enabled: {
                 type: 'boolean',
@@ -74,12 +93,18 @@ exports.config = {
                 label: 'Prio',
                 defaultValue: 100,
                 min: 0,
-                $width: 80
+                // Fixed pixels ($width >= 8). Sized to the header rather than
+                // the value -- the grid prints the raw stored value, so these
+                // three columns only ever have to hold "Prio"/"Match"/"Rule"
+                // and a short word. Whatever they give up goes to Pattern,
+                // which is the column that actually needs the room.
+                $width: 56
             },
             name: {
                 type: 'string',
                 label: 'Name',
-                $width: 3
+                $width: 3,
+                $column: { minWidth: 240 }
             },
             pattern: {
                 type: 'string',
@@ -89,14 +114,15 @@ exports.config = {
                     if (!v) return "pattern is required"
                     try { new RegExp(v); return false }
                     catch (e) { return "invalid regex: " + e.message }
-                }
+                },
+                $column: { minWidth: 240 }
             },
             match: {
                 type: 'select',
                 label: 'Match',
                 defaultValue: 'path',
                 options: { "Path": 'path', "Full URL": 'url' },
-                $width: 110
+                $width: 78
             },
             rule: {
                 type: 'select',
@@ -107,7 +133,7 @@ exports.config = {
                     "Deny (splash)": 'deny',
                     "Disabled": 'disabled',
                 },
-                $width: 140
+                $width: 98
             }
         }
     },
