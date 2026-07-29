@@ -6,10 +6,12 @@ exports.apiRequired = 13;
 exports.author = "feuerswut";
 exports.repo = "feuerswut/hfs-splashpage"
 
-// The config form and the plugin log sit side by side in a wrapping flex row.
-// Widening the form past the log's 40em minimum pushes the log onto the next
-// line, so it ends up below the options instead of hogging the right column.
-exports.configDialog = { sx: { maxWidth: '85vw' } }
+// The config form and the plugin log sit side by side in a wrapping flex row,
+// the log claiming a minimum of 40em. "width" sizes the dialog body, "maxWidth"
+// is picked up by the admin panel and applied to the form alone -- so the form
+// gets room for the rule grid's columns while the log is pushed past the wrap
+// point and lands below the options instead of hogging the right column.
+exports.configDialog = { sx: { width: '85vw', maxWidth: '1250px' } }
 
 // Bumped when the shape of the stored config changes; see migrate() in init.
 const CONFIG_VERSION = 2
