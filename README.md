@@ -12,11 +12,22 @@ that matches nothing gets the splash page.
 
 | Field | Meaning |
 |---|---|
-| Prio | Evaluation order, ascending. Ties keep the order of the grid. |
+| Prio | Evaluation order, ascending. See below. |
 | Name | Free text, for your own benefit. |
 | Pattern | Regular expression, case-insensitive. |
 | Match | `Path` (`/s/files/a.txt`) or `Full URL` (`https://host/s/files/a.txt?x=1`). |
 | Rule | `Allow` skips the splash, `Deny` forces it, `Disabled` ignores the row. |
+
+### The grid is kept in evaluation order
+
+Rules run by ascending priority, and the stored list is re-sorted into that order every
+time it changes, so the grid always reads top to bottom the way it runs. Reordering is
+therefore done by editing a number, not by dragging.
+
+If two rows end up sharing a priority, the one that was lower in the grid is bumped by one
+— `5, 20, 20, 999` becomes `5, 20, 21, 999`. The tie-break was already resolved that way
+internally; writing it back just makes it visible. Leave a number blank and it counts as
+`100`. Reopen the dialog after saving to see the new order.
 
 ### Patterns match the whole subject
 
