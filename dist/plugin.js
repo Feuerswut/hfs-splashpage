@@ -1,5 +1,5 @@
 // Plugin metadata HFS v3
-exports.version = 0.8;
+exports.version = 0.7;
 exports.description = "Display a splash page before users can access the site";
 exports.apiRequired = 13;
 
@@ -27,8 +27,10 @@ exports.configDialog = { sx: {
     '& > * > *': { minWidth: '0 !important' },
 } }
 
-// Bumped when the shape of the stored config changes; see migrate() in init.
-const CONFIG_VERSION = 3
+// Bringing an older stored config up to date lives entirely in its own file:
+// all it leaves behind here is the legacy keys it needs in the config form and
+// a single call from init(). Nothing in it runs per request.
+const migration = require('./migrate')
 
 // $hideUnder drops a column once the grid gets narrow, which is what keeps the
 // rows from turning into a sideways scroll instead of shrinking. The number it
@@ -54,23 +56,28 @@ const MERGE_PATTERN = { fontFamily: 'monospace', width: '100%' }
 const MERGE_TAG = { color: 'text.secondary', mr: 1 }
 
 exports.config = {
+    // The two scope settings are deliberately the same shape: each says what
+    // happens to something nothing was said about, and each turns the list
+    // under it into the opposite kind of list. Domains first, paths second --
+    // a request has to get past the domain question before the rules are even
+    // consulted.
     mode: {
         type: 'select',
         label: 'Show Splash Page',
         defaultValue: 'all',
         options: {
             "On all domains": 'all',
-            "On no domains (off)": 'none',
-            "Only on selected domains": 'hosts',
+            "On no domains": 'none',
+            "Plugin disabled": 'off',
         },
-        helperText: "Replaces the old enabled/selectedHosts pair. \"Only on selected domains\" uses the host list below.",
+        helperText: "What a domain that is *not* in the list below gets. **On all domains** makes that list an exception list -- everything is covered except the domains you name. **On no domains** makes it a whitelist -- nothing is covered except the domains you name. **Plugin disabled** stops the plugin doing anything at all.",
     },
     hosts: {
         type: 'array',
         label: 'Domains',
         defaultValue: [],
-        showIf: values => values.mode === 'hosts',
-        helperText: "Matched against the Host header with the port stripped. The pattern must match the whole host.",
+        showIf: values => values.mode !== 'off',
+        helperText: "Matched against the Host header with the port stripped. The pattern must match the whole host. Whether being listed here means covered or exempt is set by **Show Splash Page** above; either way, a disabled row counts as not listed.",
         autoRowHeight: true,
         fields: {
             name: {
@@ -112,14 +119,25 @@ exports.config = {
             }
         }
     },
+    pathMode: {
+        type: 'select',
+        label: 'Apply To Paths',
+        defaultValue: 'all',
+        options: {
+            "Run on all paths": 'all',
+            "Run on no paths (whitelist)": 'none',
+        },
+        showIf: values => values.mode !== 'off',
+        helperText: "What a request that matches no rule gets. **Run on all paths** is the usual way round: everything is covered, and each rule below carves out an exception. **Run on no paths** inverts it -- nothing is covered until a `Deny` rule says so, which is how you gate a handful of pages and leave the rest of the server alone. It replaces the old trick of parking a catch-all `.*` allow rule at priority 999.",
+    },
     rules: {
         type: 'array',
         label: 'Rules',
         defaultValue: [
             { priority: 10, name: 'robots.txt', pattern: '.*/robots\\.txt', match: 'path', rule: 'allow' },
         ],
-        showIf: values => values.mode !== 'none',
-        helperText: "Evaluated low priority first; the first match decides. The list is re-sorted into that order when you save, and two rows sharing a number are separated by bumping the lower one, so what you see is what runs. **The pattern must match the whole subject**, so `/s/files` does not cover `/s/files/a.txt` -- write `/s/files(/.*)?` for that. Requests that match nothing get the splash page, so a broad allow rule with a high priority turns the list into a whitelist.\n\nWhat the pattern is tested against depends on **Match**:\n- **Path** -- what the visitor asked for, with the query string removed, `.`/`..`/`//` normalized away, and *without* the per-domain root folder HFS prepends. `https://site.tld/res/x.css` is `/res/x.css` even when that domain is rooted at `/site.tld`.\n- **VFS path** -- the same request as HFS resolved it, root folder included: `/site.tld/res/x.css`. This is what earlier versions called Path.\n- **Full URL** -- the whole original address, scheme and host and query string included: `https://site.tld/?sharelink=abc`.\n- **Query param** -- *not* a regex. A literal `name=value` that has to equal one of the query parameters, or a bare `name` to match that parameter whatever its value. Names are compared case-insensitively, values exactly.",
+        showIf: values => values.mode !== 'off',
+        helperText: "Evaluated low priority first; the first match decides. The list is re-sorted into that order when you save, and two rows sharing a number are separated by bumping the lower one, so what you see is what runs. **The pattern must match the whole subject**, so `/s/files` does not cover `/s/files/a.txt` -- write `/s/files(/.*)?` for that. A request that matches nothing falls back to **Apply To Paths** above.\n\nWhat the pattern is tested against depends on **Match**:\n- **Path** -- what the visitor asked for, with the query string removed, `.`/`..`/`//` normalized away, and *without* the per-domain root folder HFS prepends. `https://site.tld/res/x.css` is `/res/x.css` even when that domain is rooted at `/site.tld`.\n- **VFS path** -- the same request as HFS resolved it, root folder included: `/site.tld/res/x.css`. This is what earlier versions called Path.\n- **Full URL** -- the whole original address, scheme and host and query string included: `https://site.tld/?sharelink=abc`.\n- **Query param** -- *not* a regex. A literal `name=value` that has to equal one of the query parameters, or a bare `name` to match that parameter whatever its value. Names are compared case-insensitively, values exactly.",
         autoRowHeight: true,
         fields: {
             priority: {
@@ -196,84 +214,46 @@ exports.config = {
         type: 'boolean',
         label: 'Skip Splash for WebDAV Clients',
         defaultValue: true,
-        showIf: values => values.mode !== 'none'
+        showIf: values => values.mode !== 'off',
+        helperText: "A mounted drive cannot show an interstitial: the splash page would arrive as the *content* of every file and directory the client asked for, so the mount looks like it is full of identical HTML. With this on, a request that looks like WebDAV is passed straight through.\n\nA request counts as WebDAV if it uses a WebDAV method (`PROPFIND`, `MKCOL`, `MOVE`, `COPY`, `LOCK`, `UNLOCK`, `PROPPATCH`), carries a WebDAV-only header (`Depth`, `Destination`, `Overwrite`, `Translate`, `If`, `Lock-Token`, `X-Expected-Entity-Length`), is a non-CORS `OPTIONS` probe, or comes from a known client user-agent. The first two are the same test HFS itself uses; the rest are added because this plugin runs *before* HFS gets to look at the request, so its own detection is not available yet.\n\nOnly turn this off if you have no WebDAV clients and want them gated too.",
     },
     debug: {
         type: 'boolean',
         label: 'Log Every Decision',
         defaultValue: false,
-        showIf: values => values.mode !== 'none',
+        showIf: values => values.mode !== 'off',
         helperText: "Writes one line per request to the log below, naming the rule that decided it. Noisy; for troubleshooting only.",
     },
     cookieName: {
         type: 'string',
         label: 'Cookie Name',
         defaultValue: 'example-splashpage',
-        showIf: values => values.mode !== 'none'
+        showIf: values => values.mode !== 'off'
     },
     cookieDays: {
         type: 'number',
         label: 'Cookie Duration (days)',
         defaultValue: 365,
         min: 1,
-        showIf: values => values.mode !== 'none'
+        showIf: values => values.mode !== 'off'
     },
     useCustomHTML: {
         type: 'boolean',
         label: 'Use Custom HTML File',
         defaultValue: false,
-        showIf: values => values.mode !== 'none'
+        showIf: values => values.mode !== 'off'
     },
     customHTMLPath: {
         type: 'string',
         label: 'Custom HTML File Path',
         defaultValue: '',
-        showIf: values => values.mode !== 'none' && values.useCustomHTML
+        showIf: values => values.mode !== 'off' && values.useCustomHTML
     },
 
-    // --- Legacy keys, kept only so the upgrade can read them. They are never
-    // consulted at request time and are emptied once migrated, which also makes
-    // them disappear from this form.
-    configVersion: {
-        type: 'number',
-        defaultValue: 0,
-        showIf: () => false
-    },
-    enabled: {
-        type: 'boolean',
-        defaultValue: true,
-        showIf: () => false
-    },
-    selectedHosts: {
-        type: 'array',
-        label: 'Selected Hosts (legacy, migrated)',
-        defaultValue: [],
-        showIf: values => Boolean(values.selectedHosts && values.selectedHosts.length),
-        fields: {
-            pattern: { type: 'string', label: 'Host Pattern (regex)', $width: 4 },
-            enabled: { type: 'boolean', label: 'Enabled', $width: 2 }
-        }
-    },
-    exceptions: {
-        type: 'array',
-        label: 'Path Exceptions (legacy, migrated)',
-        defaultValue: [],
-        showIf: values => Boolean(values.exceptions && values.exceptions.length),
-        fields: {
-            pattern: { type: 'string', label: 'Pattern', $width: 4 },
-            enabled: { type: 'boolean', label: 'Enabled', $width: 2 }
-        }
-    },
-    urlExceptions: {
-        type: 'array',
-        label: 'Full URL Exceptions (legacy, migrated)',
-        defaultValue: [],
-        showIf: values => Boolean(values.urlExceptions && values.urlExceptions.length),
-        fields: {
-            pattern: { type: 'string', label: 'Pattern', $width: 4 },
-            enabled: { type: 'boolean', label: 'Enabled', $width: 2 }
-        }
-    }
+    // The legacy keys the upgrade reads, defined next to the code that reads
+    // them. They hide themselves once emptied, so they only ever appear on an
+    // install that has something left to carry over.
+    ...migration.legacyConfig,
 }
 
 exports.init = api => {
@@ -281,12 +261,31 @@ exports.init = api => {
     const path = require('path')
 
     // --- Advanced options (not exposed in UI) ---
-    const ADVANCED_WEBDAV_DETECTION = true  // also detect via UA patterns and PROPFIND method
+    const ADVANCED_WEBDAV_DETECTION = true  // also detect by user agent and by OPTIONS probe
     const DEBUG_WEBDAV = false              // log WebDAV detection details per request
     // --------------------------------------------
 
     const ADMIN_BASE = '/~'
-    const WEBDAV_UA = /microsoft-webdav|davfs|cyberduck|bitkinex|webdrive|netdrive|webdav|cadaver|konqueror\/|gvfs\/|sabredav/i
+
+    // WebDAV detection. HFS has its own -- webdav.ts computes
+    //   isWebdavAuthRequest = WEBDAV_METHODS.has(ctx.method)
+    //                      || WEBDAV_HINT_HEADERS.some(h => ctx.get(h))
+    // and remembers the ip+user-agent of anything that asks that way -- but the
+    // webdav middleware is mounted *after* pluginsMiddleware in HFS's chain, so
+    // by the time it runs we have already decided whether to serve the splash
+    // page. Nothing has been set on ctx yet, and ctx.state.webdavDetected does
+    // not exist in HFS 3.1.0 at all. So the method and header lists below are
+    // copies of HFS's, kept deliberately identical, and the rest is what we add
+    // to make up for not having its per-client memory.
+    const WEBDAV_METHODS = new Set(['PROPFIND', 'MKCOL', 'MOVE', 'LOCK', 'UNLOCK',
+        // Not in HFS's list, but no browser sends them and no interstitial can
+        // answer them, so treating them as WebDAV can only help.
+        'COPY', 'PROPPATCH'])
+    const WEBDAV_HEADERS = ['depth', 'destination', 'overwrite', 'translate', 'if',
+        'lock-token', 'x-expected-entity-length']
+    // HFS's own KNOWN_UA is /webdav|miniredir|davclnt/i; this is that plus the
+    // clients that identify themselves by name instead.
+    const WEBDAV_UA = /webdav|miniredir|davclnt|davfs|cyberduck|bitkinex|webdrive|netdrive|cadaver|konqueror\/|gvfs\/|sabredav|owncloud|nextcloud|winscp|goodsync/i
 
     const defaultHTMLPath = path.join(__dirname, 'public/index.html')
     let defaultHTML = '<html><body><h1>Error loading splash page</h1></body></html>'
@@ -428,6 +427,26 @@ exports.init = api => {
         return false
     }
 
+    // Returns what made it look like WebDAV, or '' -- the reason is worth having
+    // for the log, since this decides whether a mount works.
+    function webdavReason(ctx) {
+        if (WEBDAV_METHODS.has(ctx.method)) return 'method ' + ctx.method
+        for (const h of WEBDAV_HEADERS)
+            if (ctx.get(h)) return 'header ' + h
+        // Anything HFS itself has already worked out. Never set as of 3.1.0,
+        // where the webdav middleware runs after the plugins, but it costs
+        // nothing to honour it if a later version starts filling it in.
+        if (ctx.state.webdavDetected) return 'hfs'
+        if (!ADVANCED_WEBDAV_DETECTION) return ''
+        // OPTIONS is how a client asks what a resource supports before mounting
+        // it; HFS answers it as WebDAV unless it is a CORS preflight, which is
+        // the one case where a browser sends it. Answering it with a page would
+        // make the mount fail before it started.
+        if (ctx.method === 'OPTIONS' && !ctx.get('access-control-request-method')) return 'options probe'
+        if (WEBDAV_UA.test(ctx.get('user-agent') || '')) return 'user-agent'
+        return ''
+    }
+
     // Splits on the first "=" only, so a cookie value containing one survives.
     function getCookie(cookieHeader, name) {
         if (!cookieHeader) return null
@@ -442,109 +461,9 @@ exports.init = api => {
 
     // --------------------------------------------------------------- migration
 
-    function seedName(pattern, fallback) {
-        // Just enough cleanup to be readable in the Name column; the operator is
-        // expected to rename these. Only the outer anchors are dropped -- a "^"
-        // inside a character class such as [^&] has to survive.
-        let s = String(pattern || '').replace(/^\^/, '').replace(/(^|[^\\])\$$/, '$1').replace(/\\(.)/g, '$1')
-        if (s.length > 40) s = s.slice(0, 39) + '…'
-        return s || fallback
-    }
-
-    // The old engine searched anywhere in the subject; the new one matches the
-    // whole subject. That only carries over untouched for patterns already
-    // anchored at the start, which for a path means a leading "^" or "/".
-    // Everything else gets an explicit wrap that is exactly equivalent to the
-    // old search -- including every URL rule, which by nature matches a fragment
-    // such as a query parameter and is never anchored.
-    function migratePattern(pattern, target) {
-        if (target === 'path' && /^[\^/]/.test(pattern))
-            return { pattern, wrapped: false }
-        return { pattern: '.*(?:' + pattern + ').*', wrapped: true }
-    }
-
-    function migrate() {
-        const version = Number(api.getConfig('configVersion')) || 0
-        if (version >= CONFIG_VERSION) return
-        const carried = version < 2 ? migrateToV2() : false
-        // v3 changes no stored shape, so there is nothing to rewrite -- but it
-        // does change what an existing row means, which is worth one line in
-        // the log. Skipped on a fresh install, where there is no "before".
-        if (version >= 2 || carried) noteV3()
-        api.setConfig('configVersion', CONFIG_VERSION)
-    }
-
-    // "path" rules used to be tested against ctx.path, which HFS has already
-    // rewritten to include the per-domain root folder. That subject is now
-    // called "vfs" and "path" means the request as the visitor wrote it, so on
-    // a server using roots the two are no longer the same string.
-    function noteV3() {
-        const n = (api.getConfig('rules') || []).filter(r => r && (!r.match || r.match === 'path')).length
-        if (!n) return
-        api.log('note: "Path" now matches the request as sent (no root folder, no query string) rather than'
-            + ' the VFS path -- ' + n + ' rule(s) use it. Switch one to "VFS path" to get the old subject back.')
-    }
-
-    function migrateToV2() {
-        const oldHosts = api.getConfig('selectedHosts') || []
-        const oldPaths = api.getConfig('exceptions') || []
-        const oldUrls = api.getConfig('urlExceptions') || []
-
-        if (!oldHosts.length && !oldPaths.length && !oldUrls.length)
-            return false  // nothing to carry over
-
-        api.log('upgrading config -- matching is now whole-subject, not search')
-
-        // mode: the old pair was "enabled" plus "empty selectedHosts means all"
-        const wasEnabled = api.getConfig('enabled')
-        const hadHosts = oldHosts.some(h => h && h.enabled && h.pattern)
-        const mode = wasEnabled === false ? 'none' : (hadHosts ? 'hosts' : 'all')
-        api.setConfig('mode', mode)
-        api.log('  mode = ' + mode)
-
-        const hosts = oldHosts.map(h => ({
-            name: seedName(h && h.pattern, 'host'),
-            pattern: (h && h.pattern) || '',
-            enabled: !(h && h.enabled === false),
-        }))
-        for (const h of hosts)
-            api.log('  host "' + h.pattern + '" now has to match the whole host name -- check it')
-        if (hosts.length) api.setConfig('hosts', hosts)
-
-        // Both legacy lists collapse into one, distinguished by the match column.
-        // Priorities are spaced so rows can be inserted between them later.
-        const rules = []
-        let prio = 0
-        const carry = (list, target) => {
-            for (const e of list) {
-                if (!e || !e.pattern) continue
-                prio += 10
-                const action = e.enabled === false ? 'disabled' : 'allow'
-                const conv = migratePattern(e.pattern, target)
-                rules.push({
-                    priority: prio,
-                    name: seedName(e.pattern, 'rule ' + (rules.length + 1)),
-                    pattern: conv.pattern,
-                    match: target,
-                    rule: action,
-                })
-                api.log('  rule "' + e.pattern + '" (' + target + ', ' + action + ')'
-                    + (conv.wrapped ? ' -> wrapped as "' + conv.pattern
-                        + '" to keep matching anywhere; tighten it if you can' : ''))
-            }
-        }
-        carry(oldPaths, 'path')
-        carry(oldUrls, 'url')
-        if (rules.length) api.setConfig('rules', rules)
-
-        api.setConfig('selectedHosts', [])
-        api.setConfig('exceptions', [])
-        api.setConfig('urlExceptions', [])
-        api.log('upgrade done: ' + hosts.length + ' host(s), ' + rules.length + ' rule(s)')
-        return true
-    }
-
-    migrate()
+    // Runs before anything subscribes to the config, so the rest of init() sees
+    // the upgraded values. Everything it does lives in migrate.js.
+    migration.migrate(api)
 
     // Compile once per config change rather than once per request.
     const unsubRules = api.subscribeConfig('rules', v => {
@@ -569,7 +488,7 @@ exports.init = api => {
 
     exports.middleware = ctx => {
         const mode = api.getConfig('mode')
-        if (mode === 'none') return
+        if (mode === 'off') return
 
         // The three subjects a rule can be tested against. "path" is the request
         // as the visitor wrote it: HFS's roots feature rewrites ctx.path to
@@ -593,28 +512,30 @@ exports.init = api => {
         // Always skip requests from the admin panel and API
         if (ctx.path.startsWith(ADMIN_BASE)) return
 
-        if (mode === 'hosts' && !hostMatches(ctx.get('host'))) {
-            trace('skip', 'host not selected')
+        // The domain list is read one way round or the other depending on the
+        // mode: listed means exempt when the default is "all", and listed means
+        // covered when it is "none". "hosts" is what v0.6's upgrade wrote for
+        // the second of those before it had a name.
+        const listed = hostMatches(ctx.get('host'))
+        const whitelist = mode === 'none' || mode === 'hosts'
+        if (whitelist ? !listed : listed) {
+            trace('skip', whitelist ? 'domain not listed' : 'domain excluded')
             return
         }
 
-        // Skip WebDAV clients when the option is on.
-        // Fall back to UA matching if HFS hasn't set webdavDetected (e.g. Microsoft-WebDAV-MiniRedir)
-        const uaMatch = ADVANCED_WEBDAV_DETECTION && WEBDAV_UA.test(ctx.get('user-agent') || '')
-        const propfindMatch = ADVANCED_WEBDAV_DETECTION && ctx.method === 'PROPFIND'
-        const isWebdav = ctx.state.webdavDetected || uaMatch || propfindMatch
-        if (DEBUG_WEBDAV)
-            api.log('webdav check ' + ctx.path + ': state=' + Boolean(ctx.state.webdavDetected)
-                + ' ua=' + Boolean(uaMatch) + ' propfind=' + Boolean(propfindMatch))
-        if (api.getConfig('ignoreWebdav') && isWebdav) {
-            trace('skip', 'webdav')
+        const dav = webdavReason(ctx)
+        if (DEBUG_WEBDAV) api.log('webdav check ' + ctx.method + ' ' + ctx.path + ': ' + (dav || 'no'))
+        if (dav && api.getConfig('ignoreWebdav')) {
+            trace('skip', 'webdav (' + dav + ')')
             return
         }
 
-        // First match by ascending priority decides. No match means splash, so
-        // a catch-all allow at a high priority turns the list into a whitelist.
-        let decision = null
-        let why = 'no rule matched'
+        // First match by ascending priority decides. What a request that matches
+        // nothing gets is the pathMode setting, which is the same question the
+        // domain mode asks one level up: the rules are exceptions to it, and
+        // inverting it turns an exception list into a whitelist.
+        let decision = api.getConfig('pathMode') === 'none' ? 'allow' : 'deny'
+        let why = 'no rule matched, default ' + decision
         for (const r of compiledRules) {
             const hit = r.target === 'query' ? queryMatches(ctx.query, r.literal)
                 : r.re.test(subject[r.target])

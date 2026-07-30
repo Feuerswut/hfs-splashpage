@@ -8,7 +8,7 @@ Which requests are covered is decided by a rule list.
 ## Rules
 
 One list, evaluated **lowest priority first**, and the **first match decides**. A request
-that matches nothing gets the splash page.
+that matches nothing falls back to `Apply To Paths` — by default, it gets the splash page.
 
 | Field | Meaning |
 |---|---|
@@ -80,36 +80,46 @@ and no risk of the `.*` on either end matching more than you meant.
 
 Query rules are exempt from all of this, being literals rather than patterns.
 
-### Allow-list vs deny-list
+### Which way round the list works
 
-Unmatched requests get the splash, so a list of `Allow` rules is a **deny-list**: everything
-is covered except what you carve out.
+`Apply To Paths` decides what happens to a request no rule matched, and so decides what kind
+of list you are writing:
 
-For an **allow-list**, put a catch-all `Allow` on `.*` at a high priority and the pages you
-actually want gated above it as `Deny`:
+- **Run on all paths** (default) — everything is covered and each `Allow` rule carves out an
+  exception. A **deny-list**.
+- **Run on no paths (whitelist)** — nothing is covered until a `Deny` rule says so. An
+  **allow-list**, for gating a handful of landing pages and leaving assets, downloads and API
+  endpoints alone:
 
 | Prio | Pattern | Rule |
 |---|---|---|
 | 10 | `/` | Deny |
 | 20 | `/s/[^/]+/?` | Deny |
-| 999 | `.*` | Allow |
 
-Because `Deny` sits above the catch-all, only the landing pages are gated while assets,
-downloads and API endpoints pass straight through.
+Earlier versions had no such setting and the same thing was done by parking a catch-all
+`Allow` on `.*` at priority 999. That still works; the setting is just the honest way to say
+it, and it cannot be shadowed by a rule you add later.
 
 ## Domains
 
-`Show Splash Page` picks the scope:
+`Show Splash Page` does the same job one level up — it says what a domain that is **not** in
+the `Domains` list gets, and thereby what that list means:
 
-- **On all domains** — every request is a candidate.
-- **On no domains** — the plugin is idle.
-- **Only on selected domains** — the `Domains` list applies. Patterns match the whole host
-  name with the port stripped, so `feuerswut\.de` matches but `feuerswut` does not.
+- **On all domains** (default) — every domain is covered, and the list is an exception list.
+- **On no domains** — no domain is covered, and the list is a whitelist.
+- **Plugin disabled** — nothing runs at all, and the rest of the form is hidden.
+
+Patterns are matched against the `Host` header with the port stripped, and have to match the
+whole host name: `feuerswut\.de` matches but `feuerswut` does not, and does not cover
+`sub.feuerswut.de` either — write `(.*\.)?feuerswut\.de` for that. A disabled row counts as
+not listed, whichever way round the list is being read.
 
 ## Other options
 
-- **Skip Splash for WebDAV Clients** — WebDAV cannot render an interstitial, so mounts would
-  otherwise break. Detected from HFS itself plus the request method and user agent.
+- **Skip Splash for WebDAV Clients** — on by default, and worth leaving on. A mounted drive
+  cannot show an interstitial: the splash page would arrive as the *content* of every file
+  and directory the client asked for, so the mount looks like it is full of identical HTML.
+  See below for what counts as WebDAV.
 - **Log Every Decision** — writes one line per request into the log panel of this dialog,
   naming the rule that decided it. Noisy; for troubleshooting only.
 - **Cookie Name / Duration** — how acceptance is remembered.
@@ -118,6 +128,25 @@ downloads and API endpoints pass straight through.
 
 Requests to the admin panel (`/~`) are never covered. An accepted cookie wins over a `Deny`
 rule, so a visitor who already accepted is not prompted again.
+
+### How WebDAV is detected
+
+This plugin is a middleware, and middlewares run *before* HFS decides whether a request is
+WebDAV — so HFS's own answer is not available yet and the test has to be repeated here. A
+request counts as WebDAV if any of these hold:
+
+| Signal | |
+|---|---|
+| Method | `PROPFIND`, `MKCOL`, `MOVE`, `COPY`, `LOCK`, `UNLOCK`, `PROPPATCH` |
+| Header | `Depth`, `Destination`, `Overwrite`, `Translate`, `If`, `Lock-Token`, `X-Expected-Entity-Length` |
+| `OPTIONS` probe | an `OPTIONS` request without `Access-Control-Request-Method` — i.e. not a browser CORS preflight |
+| User agent | a known client: Windows miniredir, davfs, Cyberduck, WinSCP, Nextcloud, Cadaver, GVFS and similar |
+
+The first two rows are exactly what HFS itself checks. The last two are added on top: a mount
+begins with an `OPTIONS` probe carrying none of the above, so without it the very first
+request of a mount would still get a page. They can be turned off by setting
+`ADVANCED_WEBDAV_DETECTION` to `false` at the top of `init` in `plugin.js`; setting
+`DEBUG_WEBDAV` to `true` next to it logs the verdict and the reason for every request.
 
 ## Narrow windows
 
@@ -140,28 +169,35 @@ seeing.
 
 Editing is unaffected — the row dialog always shows every field.
 
-## Upgrading from 0.7
-
-`Path` rules used to be tested against HFS's VFS path, which on a domain with a `roots`
-folder is prefixed with that folder. `Path` now means the request as the visitor sent it,
-and the old subject is available as `VFS path`.
-
-If you do not use `roots`, the only difference is that the query string is no longer part
-of the subject, and existing patterns keep working. If you do, a rule written as
-`/feuerswut\.de/res/.*` should now be either `/res/.*` on `Path` or left as it is and
-switched to `VFS path`. The log names how many rules are affected on first start.
-
 ## Upgrading from 0.6 and earlier
 
 The old `Enabled` switch, `Selected Hosts`, `Path Exceptions` and `Full URL Exceptions` are
 migrated automatically the first time 0.7 starts, and the old lists are then emptied. The
-log panel records exactly what was carried over.
+log panel records exactly what was carried over. The aim is that the upgrade changes nothing
+about which requests get the splash page.
 
-Old patterns were matched with a *search* rather than a whole-subject match. To keep
-behaviour identical, any pattern that was not already anchored — plus every Full URL rule —
-is rewritten as `.*(?:X).*` during the migration, and the rewrite is logged so you can
-tighten it later.
+Path exceptions become `VFS path` rules rather than `Path` ones. They used to be tested
+against the path HFS had already resolved, root folder included, and that subject is what
+`VFS path` now means — carrying them to `Path` would break them on any domain with a root
+folder. Rules you write yourself still default to `Path`.
 
-Path patterns that already began with `^` or `/` are carried over untouched, which means
-they now mean what they look like. Watch for `/$` in particular: as a search it matched
-*every path ending in a slash*, and after the upgrade it matches only the site root.
+Old patterns were matched with a *search* rather than a whole-subject match, so any pattern
+not anchored at **both** ends is rewritten as `.*(?:X).*` to go on meaning what it did, and
+the rewrite is logged so you can tighten it later. Only `^…$` patterns are carried untouched,
+that being the one shape a search and a whole-subject match already agreed on. Anchoring one
+end was never enough: `^/res/` meant "starts with", not "is".
+
+Host patterns are the one deliberate change. They are carried across as they are, and now
+have to match the whole host name — `feuerswut\.de` no longer covers `sub.feuerswut.de`.
+Each one is logged with a reminder to check it.
+
+The old on/off switch becomes the scope setting: off becomes **Plugin disabled**, an empty
+host list becomes **On all domains**, and a host list becomes **On no domains** with that list
+read as the whitelist — including a list whose entries were all switched off, which selected
+nothing and so left the plugin idle. `Apply To Paths` stays at **Run on all paths**, which is
+what 0.6 did. If you had no exceptions at all, the rule list starts empty rather than picking
+up the default `robots.txt` rule a fresh install gets.
+
+The migration lives in [`dist/migrate.js`](dist/migrate.js), ordered by config version, and
+runs once — the stored `configVersion` is what decides, so it is safe across restarts and
+reloads.
