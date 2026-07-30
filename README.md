@@ -14,9 +14,39 @@ that matches nothing gets the splash page.
 |---|---|
 | Prio | Evaluation order, ascending. See below. |
 | Name | Free text, for your own benefit. |
-| Pattern | Regular expression, case-insensitive. |
-| Match | `Path` (`/s/files/a.txt`) or `Full URL` (`https://host/s/files/a.txt?x=1`). |
+| Pattern | Regular expression, case-insensitive. A literal string under `Query param`. |
+| Match | What the pattern is tested against. See below. |
 | Rule | `Allow` skips the splash, `Deny` forces it, `Disabled` ignores the row. |
+
+### What a rule matches against
+
+For `GET https://feuerswut.de/res/x.css?v=2`, on a domain that HFS `roots` maps to the
+folder `/feuerswut.de`:
+
+| Match | Subject | Example |
+|---|---|---|
+| `Path` | What the visitor asked for. Query string removed, `.` `..` `//` normalized away, **no** root folder. | `/res/x.css` |
+| `VFS path` | The same request as HFS resolved it, root folder included. | `/feuerswut.de/res/x.css` |
+| `Full URL` | The whole original address, untouched. | `https://feuerswut.de/res/x.css?v=2` |
+| `Query param` | The query parameters, compared literally — not a regex. | `v=2` |
+
+`Path` is the default and is what you want almost every time: it is the URL as it appears
+in the address bar, so a rule written for one domain keeps working on another even when
+the two are rooted at different folders. `VFS path` is the subject earlier versions used,
+and is the one to pick when a rule is really about where the file lives on the server.
+
+`Query param` takes a literal `name=value` that has to equal one whole parameter, or a bare
+`name` to match that parameter whatever its value — which is the useful form for share
+links, whose value differs every time:
+
+| Pattern | `?sharelink=abc` | `?token=AbC` | `?sharelinkX=1` |
+|---|---|---|---|
+| `sharelink` | matches | no | no |
+| `token=AbC` | no | matches | no |
+| `token=abc` | no | **no** — values are case-sensitive | no |
+
+Parameter *names* are compared case-insensitively, values exactly. Nothing needs escaping,
+so `weird[=x` is a perfectly good pattern here even though it is not a valid regex.
 
 ### The grid is kept in evaluation order
 
@@ -44,7 +74,11 @@ single most common source of surprises, so it is worth being explicit:
 If you want the old "match anywhere" behaviour for one rule, wrap it yourself: `.*(?:X).*`.
 
 `Full URL` rules almost always need that wrap, because they target a fragment of the URL
-rather than the whole of it — e.g. `.*\?sharelink=[^&]+`.
+rather than the whole of it — e.g. `.*\?sharelink=[^&]+`. For query parameters specifically,
+reach for `Query param` instead: that same rule is just `sharelink`, with no wrap, no escapes
+and no risk of the `.*` on either end matching more than you meant.
+
+Query rules are exempt from all of this, being literals rather than patterns.
 
 ### Allow-list vs deny-list
 
@@ -84,6 +118,38 @@ downloads and API endpoints pass straight through.
 
 Requests to the admin panel (`/~`) are never covered. An accepted cookie wins over a `Deny`
 rule, so a visitor who already accepted is not prompted again.
+
+## Narrow windows
+
+Both grids shed columns as the dialog gets smaller, rather than turning into a sideways
+scroll. `Rules` drops `Match`, then `Pattern`, then `Prio`, then `Rule`; `Domains` drops
+`Pattern`, then `Enabled`. Either way you are left with `Name`.
+
+Most of what goes is not lost — a dropped column is re-rendered inside the `Name` cell
+underneath the name, so the narrowest rule row still reads:
+
+```
+robots.txt
+10  allow  path
+```
+
+The one exception is the rule `Pattern`. A regex is long enough to wrap over several lines
+at that width and would push the priority and the action out of sight, so it is simply
+dropped; host patterns are kept, being a plain domain and the only thing on that row worth
+seeing.
+
+Editing is unaffected — the row dialog always shows every field.
+
+## Upgrading from 0.7
+
+`Path` rules used to be tested against HFS's VFS path, which on a domain with a `roots`
+folder is prefixed with that folder. `Path` now means the request as the visitor sent it,
+and the old subject is available as `VFS path`.
+
+If you do not use `roots`, the only difference is that the query string is no longer part
+of the subject, and existing patterns keep working. If you do, a rule written as
+`/feuerswut\.de/res/.*` should now be either `/res/.*` on `Path` or left as it is and
+switched to `VFS path`. The log names how many rules are affected on first start.
 
 ## Upgrading from 0.6 and earlier
 

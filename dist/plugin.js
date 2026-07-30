@@ -1,5 +1,5 @@
 // Plugin metadata HFS v3
-exports.version = 0.7;
+exports.version = 0.8;
 exports.description = "Display a splash page before users can access the site";
 exports.apiRequired = 13;
 
@@ -28,7 +28,30 @@ exports.configDialog = { sx: {
 } }
 
 // Bumped when the shape of the stored config changes; see migrate() in init.
-const CONFIG_VERSION = 2
+const CONFIG_VERSION = 3
+
+// $hideUnder drops a column once the grid gets narrow, which is what keeps the
+// rows from turning into a sideways scroll instead of shrinking. The number it
+// compares against is the *grid's* measured width, not the window's, so the
+// thresholds have to be converted: the grid sits in a dialog body that is 85vw
+// wide (see configDialog) less its padding -- 24px a side from 600px up, 8px
+// below that -- and a few px of form gutter. Hence the arithmetic. It is an
+// estimate of the chrome, not a measurement, so if a column disappears a little
+// earlier or later than you want, nudge the number in the call.
+const gridAt = w => Math.round(0.85 * w - (w < 600 ? 24 : 56))
+
+// A column that is hidden is not lost: $mergeRender on a column that is still
+// visible re-renders the hidden one inside it, in a smaller font under the
+// name. That is why both grids also get autoRowHeight -- the extra lines need
+// somewhere to go.
+//
+// The rule grid deliberately leaves its pattern out of that: a regex is the one
+// value here long enough to wrap over several lines at 400px, and it would push
+// the short facts -- priority, action -- off the bottom of what you can read at
+// a glance. Host patterns stay, being a plain domain and the only thing on that
+// row worth seeing. Open the row to edit either way.
+const MERGE_PATTERN = { fontFamily: 'monospace', width: '100%' }
+const MERGE_TAG = { color: 'text.secondary', mr: 1 }
 
 exports.config = {
     mode: {
@@ -48,17 +71,22 @@ exports.config = {
         defaultValue: [],
         showIf: values => values.mode === 'hosts',
         helperText: "Matched against the Host header with the port stripped. The pattern must match the whole host.",
+        autoRowHeight: true,
         fields: {
             name: {
                 type: 'string',
                 label: 'Name',
                 $width: 3,
-                // Flex columns need a floor of their own now that the dialog is
-                // free to shrink, and the grid's 50px default is far below what
-                // a name or a regex needs to stay readable. At 240 the whole
-                // row bottoms out around 800px, after which the grid scrolls
-                // sideways rather than squeezing the text into uselessness.
-                $column: { minWidth: 240 }
+                // Name is the one flex column with a floor, because it is the
+                // column that is always there and the grid's 50px default is
+                // far below readable. 130 is set by the tightest band rather
+                // than by the narrowest one: between the widths at which
+                // Enabled and Pattern go, the row still has to hold name +
+                // Enabled (100) + the actions column (90), and the floor has to
+                // leave that under the grid width or it scrolls sideways at
+                // exactly the size the hiding was meant to rescue.
+                $column: { minWidth: 130 },
+                $mergeRender: { pattern: MERGE_PATTERN, enabled: MERGE_TAG }
             },
             pattern: {
                 type: 'string',
@@ -69,13 +97,18 @@ exports.config = {
                     try { new RegExp(v); return false }
                     catch (e) { return "invalid regex: " + e.message }
                 },
-                $column: { minWidth: 240 }
+                // No floor: pattern stays purely flexible so it gives ground
+                // before anything else does, and the grid shrinks instead of
+                // scrolling. It is also the first thing to be hidden outright,
+                // so the squeezed state it can reach is short-lived.
+                $hideUnder: gridAt(650)
             },
             enabled: {
                 type: 'boolean',
                 label: 'Enabled',
                 defaultValue: true,
-                $width: 100
+                $width: 100,
+                $hideUnder: gridAt(420)
             }
         }
     },
@@ -86,7 +119,8 @@ exports.config = {
             { priority: 10, name: 'robots.txt', pattern: '.*/robots\\.txt', match: 'path', rule: 'allow' },
         ],
         showIf: values => values.mode !== 'none',
-        helperText: "Evaluated low priority first; the first match decides. The list is re-sorted into that order when you save, and two rows sharing a number are separated by bumping the lower one, so what you see is what runs. **The pattern must match the whole path**, so `/s/files` does not cover `/s/files/a.txt` -- write `/s/files(/.*)?` for that. Paths that match nothing get the splash page, so a broad allow rule with a high priority turns the list into a whitelist.",
+        helperText: "Evaluated low priority first; the first match decides. The list is re-sorted into that order when you save, and two rows sharing a number are separated by bumping the lower one, so what you see is what runs. **The pattern must match the whole subject**, so `/s/files` does not cover `/s/files/a.txt` -- write `/s/files(/.*)?` for that. Requests that match nothing get the splash page, so a broad allow rule with a high priority turns the list into a whitelist.\n\nWhat the pattern is tested against depends on **Match**:\n- **Path** -- what the visitor asked for, with the query string removed, `.`/`..`/`//` normalized away, and *without* the per-domain root folder HFS prepends. `https://site.tld/res/x.css` is `/res/x.css` even when that domain is rooted at `/site.tld`.\n- **VFS path** -- the same request as HFS resolved it, root folder included: `/site.tld/res/x.css`. This is what earlier versions called Path.\n- **Full URL** -- the whole original address, scheme and host and query string included: `https://site.tld/?sharelink=abc`.\n- **Query param** -- *not* a regex. A literal `name=value` that has to equal one of the query parameters, or a bare `name` to match that parameter whatever its value. Names are compared case-insensitively, values exactly.",
+        autoRowHeight: true,
         fields: {
             priority: {
                 type: 'number',
@@ -98,31 +132,51 @@ exports.config = {
                 // three columns only ever have to hold "Prio"/"Match"/"Rule"
                 // and a short word. Whatever they give up goes to Pattern,
                 // which is the column that actually needs the room.
-                $width: 56
+                $width: 56,
+                $hideUnder: gridAt(500)
             },
             name: {
                 type: 'string',
                 label: 'Name',
                 $width: 3,
-                $column: { minWidth: 240 }
+                // Same reasoning as the host grid: the binding case is the band
+                // where Prio is gone but Rule (98) is not, so name + 98 + the
+                // actions column has to stay under the grid width.
+                $column: { minWidth: 130 },
+                // Order is display order, and it puts the priority next to the
+                // action so the last thing left standing reads "10 allow path".
+                // Pattern is deliberately absent -- see MERGE_PATTERN above.
+                $mergeRender: { priority: MERGE_TAG, rule: MERGE_TAG, match: MERGE_TAG }
             },
             pattern: {
                 type: 'string',
-                label: 'Pattern (regex)',
+                label: 'Pattern',
                 $width: 5,
-                getError: v => {
+                // The second argument carries the rest of the row, which is how
+                // this can tell that a query rule is a literal string and must
+                // not be rejected for being an invalid regex. Older admin
+                // panels may not pass it -- then it just validates as before.
+                getError: (v, o) => {
                     if (!v) return "pattern is required"
+                    if (o && o.values && o.values.match === 'query') return false
                     try { new RegExp(v); return false }
                     catch (e) { return "invalid regex: " + e.message }
                 },
-                $column: { minWidth: 240 }
+                // Purely flexible, as in the host grid above.
+                $hideUnder: gridAt(650)
             },
             match: {
                 type: 'select',
                 label: 'Match',
                 defaultValue: 'path',
-                options: { "Path": 'path', "Full URL": 'url' },
-                $width: 78
+                options: {
+                    "Path": 'path',
+                    "VFS path": 'vfs',
+                    "Full URL": 'url',
+                    "Query param": 'query',
+                },
+                $width: 78,
+                $hideUnder: gridAt(700)
             },
             rule: {
                 type: 'select',
@@ -133,7 +187,8 @@ exports.config = {
                     "Deny (splash)": 'deny',
                     "Disabled": 'disabled',
                 },
-                $width: 98
+                $width: 98,
+                $hideUnder: gridAt(450)
             }
         }
     },
@@ -252,6 +307,42 @@ exports.init = api => {
         return new RegExp('^(?:' + pattern + ')$', 'i')
     }
 
+    // Resolves "." and ".." and collapses repeated slashes, so a rule cannot be
+    // stepped around by asking for "/public/../private". HFS already refuses
+    // traversal before plugins run, but that check works on the decoded path
+    // and this one is free, so both subjects get normalized rather than
+    // trusting the request to arrive tidy. A trailing slash is meaningful --
+    // "/x" and "/x/" are different pages -- so it survives.
+    function normalizePath(p) {
+        const out = []
+        for (const seg of String(p || '').split('/')) {
+            if (!seg || seg === '.') continue
+            if (seg === '..') { out.pop(); continue }
+            out.push(seg)
+        }
+        return '/' + out.join('/') + (out.length && /\/$/.test(p) ? '/' : '')
+    }
+
+    // Query rules hold a literal, not a regex, because the thing you want to
+    // write is "sharelink=abc" and every character of a share token would
+    // otherwise have to be escaped. The literal has to equal a whole parameter,
+    // so it can't accidentally match a fragment of a longer value; with no "="
+    // it matches the parameter by name alone, whatever the value is -- which is
+    // the useful form for share links, whose value changes every time.
+    function queryMatches(query, literal) {
+        const eq = literal.indexOf('=')
+        const wantName = (eq < 0 ? literal : literal.slice(0, eq)).toLowerCase()
+        const wantValue = eq < 0 ? null : literal.slice(eq + 1)
+        for (const k of Object.keys(query || {})) {
+            if (k.toLowerCase() !== wantName) continue
+            if (wantValue === null) return true
+            const v = query[k]
+            for (const one of (Array.isArray(v) ? v : [v]))
+                if (String(one) === wantValue) return true
+        }
+        return false
+    }
+
     let compiledRules = []
     let compiledHosts = []
 
@@ -261,17 +352,25 @@ exports.init = api => {
             if (!r || !r.pattern) continue
             const action = r.rule || 'allow'
             if (action === 'disabled') continue
-            let re
-            try { re = compile(r.pattern) }
-            catch (e) {
-                api.log('rule "' + (r.name || r.pattern) + '" ignored, invalid regex: ' + e.message)
-                continue
-            }
+            // Anything unrecognised falls back to 'path' -- including rows
+            // written by v0.7, which stored 'path' for what is now 'vfs'.
+            const target = r.match === 'url' ? 'url'
+                : r.match === 'vfs' ? 'vfs'
+                : r.match === 'query' ? 'query'
+                : 'path'
+            let re = null
+            if (target !== 'query')
+                try { re = compile(r.pattern) }
+                catch (e) {
+                    api.log('rule "' + (r.name || r.pattern) + '" ignored, invalid regex: ' + e.message)
+                    continue
+                }
             const prio = Number(r.priority)
             out.push({
                 re,
+                literal: String(r.pattern),
                 action,
-                target: r.match === 'url' ? 'url' : 'path',
+                target,
                 name: r.name || r.pattern,
                 priority: Number.isFinite(prio) ? prio : 100,
             })
@@ -367,17 +466,34 @@ exports.init = api => {
     function migrate() {
         const version = Number(api.getConfig('configVersion')) || 0
         if (version >= CONFIG_VERSION) return
+        const carried = version < 2 ? migrateToV2() : false
+        // v3 changes no stored shape, so there is nothing to rewrite -- but it
+        // does change what an existing row means, which is worth one line in
+        // the log. Skipped on a fresh install, where there is no "before".
+        if (version >= 2 || carried) noteV3()
+        api.setConfig('configVersion', CONFIG_VERSION)
+    }
 
+    // "path" rules used to be tested against ctx.path, which HFS has already
+    // rewritten to include the per-domain root folder. That subject is now
+    // called "vfs" and "path" means the request as the visitor wrote it, so on
+    // a server using roots the two are no longer the same string.
+    function noteV3() {
+        const n = (api.getConfig('rules') || []).filter(r => r && (!r.match || r.match === 'path')).length
+        if (!n) return
+        api.log('note: "Path" now matches the request as sent (no root folder, no query string) rather than'
+            + ' the VFS path -- ' + n + ' rule(s) use it. Switch one to "VFS path" to get the old subject back.')
+    }
+
+    function migrateToV2() {
         const oldHosts = api.getConfig('selectedHosts') || []
         const oldPaths = api.getConfig('exceptions') || []
         const oldUrls = api.getConfig('urlExceptions') || []
 
-        if (!oldHosts.length && !oldPaths.length && !oldUrls.length) {
-            api.setConfig('configVersion', CONFIG_VERSION)  // nothing to carry over
-            return
-        }
+        if (!oldHosts.length && !oldPaths.length && !oldUrls.length)
+            return false  // nothing to carry over
 
-        api.log('upgrading config to v' + CONFIG_VERSION + ' -- matching is now whole-subject, not search')
+        api.log('upgrading config -- matching is now whole-subject, not search')
 
         // mode: the old pair was "enabled" plus "empty selectedHosts means all"
         const wasEnabled = api.getConfig('enabled')
@@ -424,8 +540,8 @@ exports.init = api => {
         api.setConfig('selectedHosts', [])
         api.setConfig('exceptions', [])
         api.setConfig('urlExceptions', [])
-        api.setConfig('configVersion', CONFIG_VERSION)
         api.log('upgrade done: ' + hosts.length + ' host(s), ' + rules.length + ' rule(s)')
+        return true
     }
 
     migrate()
@@ -455,8 +571,24 @@ exports.init = api => {
         const mode = api.getConfig('mode')
         if (mode === 'none') return
 
+        // The three subjects a rule can be tested against. "path" is the request
+        // as the visitor wrote it: HFS's roots feature rewrites ctx.path to
+        // prepend the per-domain root folder before plugins run, so on a domain
+        // rooted at /site.tld a request for /res/x.css arrives here as
+        // /site.tld/res/x.css -- ctx.state.originalPath is the copy roots takes
+        // before doing that. ctx.url is never rewritten, which is both the
+        // fallback and the reason "url" is still the untouched original.
+        const originalPath = ctx.state.originalPath || ctx.url.split('?')[0]
+        const subject = {
+            path: normalizePath(originalPath),
+            vfs: normalizePath(ctx.path),
+            url: ctx.protocol + '://' + ctx.get('host') + ctx.url,
+        }
+
         const debug = api.getConfig('debug')
-        const trace = debug ? (verdict, why) => api.log(ctx.path + ' -> ' + verdict + ' (' + why + ')') : () => {}
+        // Logs the path subject, since that is what rules are written against
+        // by default; "why" names the subject when some other one decided.
+        const trace = debug ? (verdict, why) => api.log(subject.path + ' -> ' + verdict + ' (' + why + ')') : () => {}
 
         // Always skip requests from the admin panel and API
         if (ctx.path.startsWith(ADMIN_BASE)) return
@@ -481,13 +613,14 @@ exports.init = api => {
 
         // First match by ascending priority decides. No match means splash, so
         // a catch-all allow at a high priority turns the list into a whitelist.
-        const fullURL = ctx.protocol + '://' + ctx.get('host') + ctx.url
         let decision = null
         let why = 'no rule matched'
         for (const r of compiledRules) {
-            if (!r.re.test(r.target === 'url' ? fullURL : ctx.path)) continue
+            const hit = r.target === 'query' ? queryMatches(ctx.query, r.literal)
+                : r.re.test(subject[r.target])
+            if (!hit) continue
             decision = r.action
-            why = 'rule "' + r.name + '" @' + r.priority
+            why = 'rule "' + r.name + '" @' + r.priority + ' [' + r.target + ']'
             break
         }
         if (decision === 'allow') {
