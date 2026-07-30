@@ -244,10 +244,23 @@ exports.config = {
         showIf: values => values.mode !== 'off'
     },
     customHTMLPath: {
-        type: 'string',
+        // "real_path" is a plain string field with a browse button on the end,
+        // opening the admin panel's server-side file picker. It hands back a
+        // path relative to the server's working directory when the file is
+        // under it and an absolute one otherwise -- which is exactly what
+        // readFileSync resolves against, so either form works as stored.
+        // The picker starts in the folder holding the bundled page rather than
+        // the plugin root, because that is the file to copy and edit -- and
+        // with the mask applied the plugin root shows no files at all.
+        type: 'real_path',
         label: 'Custom HTML File Path',
         defaultValue: '',
-        showIf: values => values.mode !== 'off' && values.useCustomHTML
+        files: true,
+        folders: false,
+        fileMask: '*.html|*.htm',
+        defaultPath: require('path').join(__dirname, 'public'),
+        showIf: values => values.mode !== 'off' && values.useCustomHTML,
+        helperText: "Read fresh on every request, so edits show up without reloading the plugin. If it cannot be read the bundled page is served instead and the reason is logged.",
     },
 
     // The legacy keys the upgrade reads, defined next to the code that reads
